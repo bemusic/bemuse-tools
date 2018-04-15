@@ -6,7 +6,7 @@ import Throat     from 'throat'
 import { cpus }   from 'os'
 import endpoint   from 'endpoint'
 import { spawn, execFile as _execFile } from 'child_process'
-import { extname, basename } from 'path'
+import { extname, basename, dirname } from 'path'
 
 import tmp        from './temporary'
 
@@ -22,14 +22,41 @@ export class AudioConvertor {
     this._extra = extra
   }
   convert(file) {
-    let ext = extname(file.name).toLowerCase()
+    let ext = extname(file.name)
+
     if (ext === '.' + this._target && !this.force) {
       return Promise.resolve(file)
+    } else if (ext.toLowerCase() === '.xa') {
+
+      let wavfile = dirname(file.path) + '\\' + basename(file.name, ext) + '.wav'
+
+      return this._convertXA(file.path).then(() => {
+        let name = basename(file.name, ext) + '.' + this._target
+        return this._doConvert(wavfile, this._target)
+          .then(buffer => {
+            fs.unlink(wavfile, () => { })
+            return file.derive(name, buffer)
+          })
+      })
     } else {
       let name = basename(file.name, ext) + '.' + this._target
       return this._doConvert(file.path, this._target)
         .then(buffer => file.derive(name, buffer))
     }
+  }
+  _convertXA(path) {
+    return throat(() => new Promise((resolve, reject) => {
+      let xa = spawn('xa', ['-d', path])
+      xa.stderr.on('data', x => process.stderr.write(x))
+      xa.on('close', (code) => {
+        if (code === 0) {
+          resolve()
+        } else {
+          console.error('Unable to convert audio file -- XA exited ' + code)
+          reject(new Error('XA process exited: ' + code))
+        }
+      })
+    }))
   }
   _doConvert(path, type) {
     if (type === 'm4a') {

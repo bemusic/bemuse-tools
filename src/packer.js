@@ -22,8 +22,8 @@ export function packIntoBemuse(path) {
     let directory = new Directory(path)
     let packer    = new BemusePacker(directory)
 
-    console.log('-> Loading audios')
-    let audio     = yield directory.files('*.{mp3,wav,ogg}')
+    console.log('-> Loading audios!')
+    let audio     = yield directory.files('**/*.{mp3,wav,ogg,xa}')
 
     console.log('-> Converting audio to ogg [better audio performance]')
     let oggc      = new AudioConvertor('ogg', '-C', '3')
