@@ -1,6 +1,6 @@
 {
   "asi": true,
-  "esnext": true,
+  "esversion": 6,
   "eqeqeq": true,
   "camelcase": true,
   "funcscope": true,
