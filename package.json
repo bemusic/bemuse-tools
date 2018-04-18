@@ -22,7 +22,7 @@
   "homepage": "https://github.com/bemusic/bemuse-tools",
   "dependencies": {
     "babel": "^5.4.3",
-    "bemuse-indexer": "^3.1.0",
+    "bemuse-indexer": "drummaniac/bemuse-indexer#dtx-support",
     "bluebird": "^2.9.9",
     "bytes": "^1.0.0",
     "chalk": "^1.0.0",
@@ -30,6 +30,7 @@
     "cors": "^2.7.1",
     "endpoint": "^0.4.2",
     "express": "^4.12.4",
+    "fluent-ffmpeg": "^2.1.2",
     "format-json": "^1.0.3",
     "glob": "^4.3.5",
     "gulp-util": "^3.0.1",
@@ -40,7 +41,8 @@
     "mkdirp": "^0.5.0",
     "rx": "^2.5.3",
     "temp": "^0.8.1",
-    "throat": "^1.0.0"
+    "throat": "^1.0.0",
+    "xa-dtx": "^0.0.4"
   },
   "devDependencies": {
     "chai": "^1.10.0",

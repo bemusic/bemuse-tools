@@ -1,103 +1,94 @@
-
-import Promise    from 'bluebird'
-import co         from 'co'
-import fs         from 'fs'
-import Throat     from 'throat'
-import { cpus }   from 'os'
-import endpoint   from 'endpoint'
-import { spawn, execFile as _execFile } from 'child_process'
+import co from 'co'
 import { extname, basename } from 'path'
-
-import tmp        from './temporary'
-
-let readFile  = Promise.promisify(fs.readFile, fs)
-let writeFile = Promise.promisify(fs.writeFile, fs)
-let execFile  = Promise.promisify(_execFile)
+import { cpus } from 'os'
+import createConverter from './converters'
+import Throat from 'throat'
 
 let throat = new Throat(cpus().length || 1)
 
 export class AudioConvertor {
-  constructor(type, ...extra) {
-    this._target = type
-    this._extra = extra
+  constructor(options, rules) {
+    this._target = options.format
+    this._force = options.force
+    this._rules = rules
   }
+
   convert(file) {
-    let ext = extname(file.name).toLowerCase()
-    if (ext === '.' + this._target && !this.force) {
-      return Promise.resolve(file)
-    } else {
-      let name = basename(file.name, ext) + '.' + this._target
-      return this._doConvert(file.path, this._target)
-        .then(buffer => file.derive(name, buffer))
-    }
-  }
-  _doConvert(path, type) {
-    if (type === 'm4a') {
-      return co(function*() {
-        let wav = yield this._SoX(path, 'wav')
-        let prefix = tmp()
-        let wavPath = prefix + '.wav'
-        let m4aPath = prefix + '.m4a'
-        yield writeFile(wavPath, wav)
-        if (process.platform.match(/^win/)) {
-          yield execFile('qaac', ['-o', m4aPath, '-c', '128', wavPath])
-        } else {
-          yield execFile('afconvert', [wavPath, m4aPath, '-f', 'm4af',
-                  '-b', '128000', '-q', '127', '-s', '2'])
-        }
-        return yield readFile(m4aPath)
-      }.bind(this))
-    } else {
-      return this._SoX(path, type)
-    }
-  }
-  _SoX(path, type) {
     return co(function*() {
-      let typeArgs = [ ]
-      try {
-        let fd = yield Promise.promisify(fs.open, fs)(path, 'r')
-        let buffer = new Buffer(4)
-        let read = yield Promise.promisify(fs.read, fs)(fd, buffer, 0, 4, null)
-        yield Promise.promisify(fs.close, fs)(fd)
-        if (read === 0) {
-          console.error('[WARN] Empty keysound file.')
-        } else if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
-          typeArgs = [ '-t', 'mp3' ]
-        } else if (buffer[0] === 0xFF && buffer[1] === 0xFB) {
-          typeArgs = [ '-t', 'mp3' ]
-        } else if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
-          typeArgs = [ '-t', 'ogg' ]
-        }
-      } catch (e) {
-        console.error('[WARN] Unable to detect file type!')
+      let ext = extname(file.name)
+      let name = basename(file.name, ext) + '.' + this._target
+      let inputFormat = yield this.guessFormat(file)
+
+      // return original file if format did not changed and encoding not forced
+      if (inputFormat === this._target && !this._force) {
+        return yield file.derive(name)
       }
-      return yield this._doSoX(path, type, typeArgs)
-    }.bind(this));
+
+      // get encode rule for target format
+      let encodeRule = this._rules.encoders[this._target]
+      if (!encodeRule) {
+        return Promise.reject(new Error('Encode rule not found'))
+      }
+
+      // get decodeRule for source format
+      let decodeRule = this._rules.decoders[inputFormat] ||
+        this._rules.decoders.default
+
+      let buffer
+      // decode if encoder does not support source format or source should be force decoded
+      if (decodeRule.force ||
+        encodeRule.inputFormats &&
+        encodeRule.inputFormats.indexOf(inputFormat) === -1) {
+        buffer = yield this.decode(file.buffer, inputFormat, decodeRule)
+        inputFormat = 'wav'
+      } else {
+        buffer = file.buffer
+      }
+
+      // encode buffer to target format
+      buffer = yield this.encode(buffer, inputFormat, encodeRule)
+
+      return yield Promise.resolve(file.derive(name, buffer))
+    }.bind(this))
   }
-  _doSoX(path, type, inputTypeArgs) {
-    return throat(() => new Promise((resolve, reject) => {
-      let sox = spawn('sox', [...inputTypeArgs, path, '-t', type, ...this._extra, '-'])
-      sox.stdin.end()
-      sox.stderr.on('data', x => process.stderr.write(x))
-      let data = new Promise((resolve, reject) => {
-        sox.stdout.pipe(endpoint((err, buffer) => {
-          if (err) {
-            console.error('Error reading audio!')
-            reject(err)
-          } else {
-            resolve(buffer)
-          }
-        }))
-      })
-      sox.on('close', (code) => {
-        if (code === 0) {
-          resolve(data)
-        } else {
-          console.error('Unable to convert audio file -- SoX exited ' + code)
-          reject(new Error('SoX process exited: ' + code))
-        }
-      })
-    }))
+
+  guessFormat(file) {
+    return new Promise((resolve, reject) => {
+      let buffer = file.buffer
+
+      if (buffer.length < 4) {
+        return reject(new Error('Empty keysound file'))
+      }
+
+      if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
+        resolve('mp3')
+      } else if (buffer[0] === 0xFF && buffer[1] === 0xFB) {
+        resolve('mp3')
+      } else if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
+        resolve('ogg')
+      } else {
+        let ext = extname(file.name).substr(1).toLowerCase()
+        resolve(ext)
+      }
+    })
+  }
+
+  decode(buffer, inputFormat, rule) {
+    let decoder = createConverter(rule.decoder, rule.options)
+    if (!decoder) {
+      return Promise.reject(new Error(`Decoder ${rule.decoder} not found`))
+    }
+
+    return throat(() => decoder.convert(buffer, inputFormat, rule.options))
+  }
+
+  encode(buffer, inputFormat, rule) {
+    let encoder = createConverter(rule.encoder, rule.options)
+    if (!encoder) {
+      return Promise.reject(new Error(`Encoder ${rule.decoder} not found`))
+    }
+
+    return throat(() => encoder.convert(buffer, inputFormat, rule.options))
   }
 }
 

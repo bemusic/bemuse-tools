@@ -11,7 +11,7 @@ export class Directory {
     this._path = path
   }
   files(pattern) {
-    return glob(pattern, { cwd: this._path })
+    return glob(pattern, { cwd: this._path, nocase: true })
       .map(name => readFile(path.join(this._path, name)).then(buffer =>
         new FileEntry(this, name, buffer)))
   }
