@@ -10,6 +10,8 @@ import AudioConvertor   from './audio'
 import Directory        from './directory'
 import BemusePacker     from './bemuse-packer'
 
+import config   from '../config/packer'
+
 let mkdirp    = Promise.promisify(require('mkdirp'))
 let fileStat  = Promise.promisify(fs.stat, fs)
 
@@ -22,29 +24,22 @@ export function packIntoBemuse(path) {
     let directory = new Directory(path)
     let packer    = new BemusePacker(directory)
 
-    console.log('-> Loading audios!')
-    let audio     = yield directory.files('**/*.{mp3,wav,ogg,xa}')
+    console.log('-> Loading audios')
+    let extensions = config.audio.extensions.join(',')
+    let audio     = yield directory.files('**/*.{' + extensions + '}')
 
-    console.log('-> Converting audio to ogg [better audio performance]')
-    let oggc      = new AudioConvertor('ogg',
-                          '-q:a', '6', '-c:a', 'libvorbis', '-f', 'ogg')
-    oggc.force    = true
-    let oggs      = yield dotMap(audio, file => oggc.convert(file))
-
-    console.log('-> Converting audio to m4a [for iOS and Safari]')
-    let m4ac      = new AudioConvertor('m4a',
-                          '-b:a', '192k', '-c:a', 'aac', '-movflags',
-                          'frag_keyframe+empty_moov', '-f', 'ipod', '-vn')
-    let m4as      = yield dotMap(audio, file => m4ac.convert(file))
-
-    packer.pack('m4a',  m4as)
-    packer.pack('ogg',  oggs)
+    for (let i in config.audio.pack) {
+      let options = config.audio.pack[i]
+      console.log(`-> Converting audio to ${options.format} [${options.title}]`)
+      let converter = new AudioConvertor(options, config.audio.rules)
+      let audios    = yield dotMap(audio, file => converter.convert(file))
+      packer.pack(options.format, audios)
+    }
 
     console.log('-> Writing...')
     let out = join(path, 'assets')
     yield mkdirp(out)
     yield packer.write(out)
-
   })
 }
 

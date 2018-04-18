@@ -1,61 +1,94 @@
-import Promise    from 'bluebird'
-import fs         from 'fs'
+import co from 'co'
 import { extname, basename } from 'path'
-import xaConvert  from 'xa-dtx'
-import ffmpeg     from 'fluent-ffmpeg'
-import {ReadableBufferStream, WritableBufferStream} from './bufferstream'
+import { cpus } from 'os'
+import createConverter from './converters'
+import Throat from 'throat'
+
+let throat = new Throat(cpus().length || 1)
 
 export class AudioConvertor {
-  constructor(type, ...extra) {
-    this._target = type
-    this._extra = extra
+  constructor(options, rules) {
+    this._target = options.format
+    this._force = options.force
+    this._rules = rules
   }
 
   convert(file) {
-    let ext = extname(file.name)
-    let name = basename(file.name, ext) + '.' + this._target
-    ext = ext.toLowerCase().substr(1)
+    return co(function*() {
+      let ext = extname(file.name)
+      let name = basename(file.name, ext) + '.' + this._target
+      let inputFormat = yield this.guessFormat(file)
 
-    if (ext === this._target && !this.force) {
-      return Promise.resolve(file)
-    } else if (ext === 'xa') {
-      return xaConvert(file.path).then(wav => {
-        return this._doFfmpeg(wav.buffer, 'wav', this._target, name)
-      }).then(buffer => file.derive(name, buffer))
-    } else {
-      return this
-        ._doFfmpeg(file.path, ext, this._target, name)
-        .then(buffer => file.derive(name, buffer))
-    }
-  }
-
-  _doFfmpeg(input) {
-    return new Promise((resolve, reject) => {
-      let readStream
-
-      // init input stream
-      if (typeof input === 'string') {
-        readStream = fs.createReadStream(input)
-      } else {
-        readStream = new ReadableBufferStream(input)
+      // return original file if format did not changed and encoding not forced
+      if (inputFormat === this._target && !this._force) {
+        return yield file.derive(name)
       }
 
-      let writeStream = new WritableBufferStream()
+      // get encode rule for target format
+      let encodeRule = this._rules.encoders[this._target]
+      if (!encodeRule) {
+        return Promise.reject(new Error('Encode rule not found'))
+      }
 
-      // do ffmpeg
-      ffmpeg(readStream)
-        .output(writeStream)
-        .outputOptions(this._extra)
-        .on('end', () => {
-          // let outBuffer = writeStream._buffer.slice(0, writeStream._bufferPos)
-          resolve(writeStream.buffer)
-        })
-        .on('error', (err) => {
-          console.error('Unable to convert audio file -- ffmpeg exited ' + err)
-          reject(new Error('ffmpeg process exited: ' + err))
-        })
-        .run()
+      // get decodeRule for source format
+      let decodeRule = this._rules.decoders[inputFormat] ||
+        this._rules.decoders.default
+
+      let buffer
+      // decode if encoder does not support source format or source should be force decoded
+      if (decodeRule.force ||
+        encodeRule.inputFormats &&
+        encodeRule.inputFormats.indexOf(inputFormat) === -1) {
+        buffer = yield this.decode(file.buffer, inputFormat, decodeRule)
+        inputFormat = 'wav'
+      } else {
+        buffer = file.buffer
+      }
+
+      // encode buffer to target format
+      buffer = yield this.encode(buffer, inputFormat, encodeRule)
+
+      return yield Promise.resolve(file.derive(name, buffer))
+    }.bind(this))
+  }
+
+  guessFormat(file) {
+    return new Promise((resolve, reject) => {
+      let buffer = file.buffer
+
+      if (buffer.length < 4) {
+        return reject(new Error('Empty keysound file'))
+      }
+
+      if (buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
+        resolve('mp3')
+      } else if (buffer[0] === 0xFF && buffer[1] === 0xFB) {
+        resolve('mp3')
+      } else if (buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53) {
+        resolve('ogg')
+      } else {
+        let ext = extname(file.name).substr(1).toLowerCase()
+        resolve(ext)
+      }
     })
+  }
+
+  decode(buffer, inputFormat, rule) {
+    let decoder = createConverter(rule.decoder, rule.options)
+    if (!decoder) {
+      return Promise.reject(new Error(`Decoder ${rule.decoder} not found`))
+    }
+
+    return throat(() => decoder.convert(buffer, inputFormat, rule.options))
+  }
+
+  encode(buffer, inputFormat, rule) {
+    let encoder = createConverter(rule.encoder, rule.options)
+    if (!encoder) {
+      return Promise.reject(new Error(`Encoder ${rule.decoder} not found`))
+    }
+
+    return throat(() => encoder.convert(buffer, inputFormat, rule.options))
   }
 }
 
