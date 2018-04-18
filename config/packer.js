@@ -44,7 +44,7 @@ module.exports = {
     pack: [
       {
         format: 'ogg',
-        title: 'better converters performance',
+        title: 'better audio performance',
         force: true,
       },
       {
